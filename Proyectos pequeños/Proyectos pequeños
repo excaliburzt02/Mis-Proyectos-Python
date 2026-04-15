@@ -1,0 +1,148 @@
+import sqlite3
+import asyncio
+from telegram import Bot
+import httpx
+from bs4 import BeautifulSoup
+TOKEN = '8786624573:AAFmM2KKYYekoZbzuapTMIReR0dEMpK-PzU'
+MI_ID = '8627928338'
+PALABRAS_CLAVE = ["torneria", "mecanica", "mantenimiento", 'metalmecanica', 'torno', 'tornero', 'medio oficial tornero', 'mantenimiento industrial', 'torneria de presicion', 'montaje industrial', 'tornero convencional', 'torneria convencional']
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "es-ES,es;q=0.9",
+    "Referer": "https://www.google.com/" 
+}
+
+
+
+def inicializar_db():
+    conn = sqlite3.connect('ofertas.db')
+    cursor = conn.cursor()
+    cursor.execute('CREATE TABLE IF NOT EXISTS enviadas (link TEXT PRIMARY KEY)')
+    conn.commit()
+    conn.close()
+inicializar_db()
+
+
+async def enviar_aviso(titulo_empleo, link_empleo):
+    bot = Bot(token=TOKEN)
+
+    await bot.send_message(chat_id=MI_ID, text=f"✅ ¡Oferta encontrada!\n\nTrabajo: {titulo_empleo}\nLink: {link_empleo}")
+
+async def buscar_buscojobs():
+    async with httpx.AsyncClient() as client:
+        
+        respuesta = await client.get("https://www.buscojobs.com.uy/ofertas", timeout=40.0)
+        
+        print(respuesta.status_code)
+        
+        soup = BeautifulSoup(respuesta.text, 'html.parser')
+        
+        print(soup.title.text)
+        
+        ofertas = soup.find_all('a', href=True)
+        
+        print(f"Encontré {len(ofertas)} links de ofertas para revisar.")
+        
+        for oferta in ofertas:
+        
+            titulo = oferta.text.strip().lower()
+        
+            if not titulo: 
+       
+                continue
+       
+            lugar = titulo
+
+            enlace_corto = oferta['href']
+       
+            link_final = f"https://www.buscojobs.com.uy{enlace_corto}"
+
+            if any(palabra in titulo for palabra in PALABRAS_CLAVE) and "montevideo" in lugar:
+                conn = sqlite3.connect('ofertas.db')
+                cursor = conn.cursor()
+
+                cursor.execute('SELECT link FROM enviadas WHERE link = ?', (link_final,))
+                resultado = cursor.fetchone()
+
+                if resultado is None:
+                    print(f"✅ ¡NUEVA OFERTA!: {titulo}")
+                    await enviar_aviso(titulo, link_final)
+
+                    cursor.execute('INSERT INTO enviadas (link) VALUES (?)', (link_final,))
+                    conn.commit()
+
+                else: 
+                    print(f"⏭️ Omitiendo repetida: {titulo}")
+
+                conn.close()
+
+        print("✅ Escaneo finalizado. No hay más ofertas por ahora.")
+
+async def buscar_computrabajo():
+    url = "https://uy.computrabajo.com/ofertas-de-trabajo/?q=mecanico"
+    async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True) as client:
+        try:
+            respuesta = await client.get(url, timeout=40.0)
+            
+            if respuesta.status_code == 200:
+                soup = BeautifulSoup(respuesta.text, 'html.parser')
+                ofertas = soup.find_all('article', class_='box_offer')
+                
+                print(f"🔎 CompuTrabajo: Analizando {len(ofertas)} ofertas...")
+
+                for oferta in ofertas:
+                    enlace_tag = oferta.find('a', class_='js-o-link')
+                    if not enlace_tag:
+                        continue
+
+                    info_tag = oferta.find('p', class_='fs16')
+                    ubicacion = info_tag.text.lower() if info_tag else ""
+
+                    link_final = "https://uy.computrabajo.com" + enlace_tag['href']
+                    titulo = enlace_tag.text.strip().lower()
+            
+
+                    if any(palabra in titulo for palabra in PALABRAS_CLAVE) and "montevideo" in ubicacion:
+                        conn = sqlite3.connect('ofertas.db')
+                        cursor = conn.cursor()
+                        cursor.execute('SELECT link FROM enviadas WHERE link = ?', (link_final,))
+                       
+                        if cursor.fetchone() is None:
+                            print(f"✅ ¡NUEVA OFERTA (CompuTrabajo)!: {titulo}")
+                            await enviar_aviso(titulo, link_final)
+                            cursor.execute('INSERT INTO enviadas (link) VALUES (?)', (link_final,))
+                            conn.commit()
+                        conn.close()
+
+            else:
+                print(f"❌ CompuTrabajo respondió con error: {respuesta.status_code}")
+
+
+        except Exception as e:
+            print(f"⚠️ Hubo un problema de conexión con CompuTrabajo: {e}")
+            print("🔄 Se reintentará en la próxima ronda.")
+              
+
+async def vigilancia_eterna():
+    while True:
+        try:
+            print("\n" + "="*40)
+            print("🛠️  INICIANDO RONDA DE VIGILANCIA...")
+            print("="*40)
+        
+            await buscar_buscojobs()
+            await buscar_computrabajo()
+        
+        except Exception as e:
+            print(f"⚠️ Error real: {e}")
+
+
+        print("\n💤 Todo despejado. Próximo escaneo en 5 minutos...")
+        await asyncio.sleep(300)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(vigilancia_eterna())
+    except KeyboardInterrupt:
+        print("\n🛑 Vigilancia detenida por el usuario.")
